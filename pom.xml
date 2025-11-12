@@ -40,6 +40,33 @@
       <artifactId>junit-jupiter-params</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- add the necessary dependencies-->
+
+
+    <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>ec2</artifactId>
+          <version>2.28.18</version>
+    </dependency>
+    <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>s3</artifactId>
+          <version>2.28.18</version>
+    </dependency>
+    <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>sqs</artifactId>
+          <version>2.28.18</version>
+    </dependency>
+
+    <dependency>
+ <groupId>edu.stanford.nlp</groupId>
+ <artifactId>stanford-parser</artifactId>
+ <version>3.6.0</version>
+</dependency>
+
+
   </dependencies>
 
   <build>
