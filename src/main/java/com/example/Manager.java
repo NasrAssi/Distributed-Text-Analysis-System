@@ -140,7 +140,7 @@ public class Manager {
             
             } else {
                 // It's a "new task" message [cite: 51]
-                // Message body is "bucket:key:n"
+                // Message body is "bucket,key,n"
                 String[] parts = messageBody.split(",");
                 String bucket = parts[0];
                 String key = parts[1];
