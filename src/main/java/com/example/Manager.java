@@ -1,6 +1,9 @@
 package com.example;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -15,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.CreateTagsRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
@@ -28,6 +32,7 @@ import software.amazon.awssdk.services.ec2.model.Tag;
 import software.amazon.awssdk.services.ec2.model.TerminateInstancesRequest;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.Message;
@@ -38,15 +43,12 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
 public class Manager {
 
     // --- Configuration ---
+    final static AWS aws = AWS.getInstance();
+    
     // Queues
-    private static final String LOCAL_APP_TO_MANAGER_QUEUE_URL = "YOUR_QUEUE_URL_1";
-    private static final String MANAGER_TO_WORKERS_QUEUE_URL = "YOUR_QUEUE_URL_2";
-    private static final String WORKERS_TO_MANAGER_QUEUE_URL = "YOUR_QUEUE_URL_3";
-    private static final String MANAGER_TO_LOCAL_APP_QUEUE_URL = "YOUR_QUEUE_URL_4";
-    // Clients
-    private static final SqsClient sqs = SqsClient.create();
-    private static final S3Client s3 = S3Client.create();
-    private static final Ec2Client ec2 = Ec2Client.create();
+    private static final String LOCAL_APP_TO_MANAGER_QUEUE_URL = aws.getQueueUrl("LocalToManager");
+    private static final String MANAGER_TO_WORKERS_QUEUE_URL = aws.getQueueUrl("ManagerToWorker");
+    private static final String WORKERS_TO_MANAGER_QUEUE_URL = aws.getQueueUrl("WorkerToManager");
     
     // Concurrency
     private static final ExecutorService executor = Executors.newFixedThreadPool(10); // Handles 10 apps at once
@@ -61,9 +63,10 @@ public class Manager {
     private static final ConcurrentMap<String, JobTracker> jobResults = new ConcurrentHashMap<>();
 
 
+
     public static void main(String[] args) {
         System.out.println("Manager node is running...");
-
+        
         // Start the results collector thread
         Thread resultsThread = new Thread(Manager::resultsCollectorLoop);
         resultsThread.start();
@@ -71,13 +74,8 @@ public class Manager {
         // Main loop: Polls for messages from Local Applications
         while (!shuttingDown.get()) {
             try {
-                ReceiveMessageRequest receiveRequest = ReceiveMessageRequest.builder()
-                        .queueUrl(LOCAL_APP_TO_MANAGER_QUEUE_URL)
-                        .maxNumberOfMessages(5)
-                        .waitTimeSeconds(20) // Long polling
-                        .build();
 
-                List<Message> messages = sqs.receiveMessage(receiveRequest).messages();
+                List<Message> messages = aws.receiveMessages(LOCAL_APP_TO_MANAGER_QUEUE_URL);
 
                 for (Message message : messages) {
                     // Give the task to a thread to run in parallel
@@ -119,10 +117,10 @@ public class Manager {
         }
 
         // 4. Terminate worker instances 
-        terminateAllWorkers(ec2);
+        terminateAllWorkers();
 
         // 5. Terminate self 
-        terminateSelf(ec2);
+        terminateSelf();
         
     }
     
@@ -145,15 +143,12 @@ public class Manager {
                 String bucket = parts[0];
                 String key = parts[1];
                 int n = Integer.parseInt(parts[2]); // Max files per worker [cite: 11]
-
-                handleNewTask(bucket, key, n);
+                String responseQueueUrl = parts[3]; // <--- Capture the reply address
+                
+                handleNewTask(bucket, key, n, responseQueueUrl);
             }
 
-            // Acknowledge and delete the message from the queue
-            sqs.deleteMessage(DeleteMessageRequest.builder()
-                    .queueUrl(LOCAL_APP_TO_MANAGER_QUEUE_URL)
-                    .receiptHandle(message.receiptHandle())
-                    .build());
+            aws.deleteMessage(LOCAL_APP_TO_MANAGER_QUEUE_URL, message.receiptHandle());
 
         } catch (Exception e) {
             System.err.println("Failed to process message: " + e.getMessage());
@@ -164,13 +159,13 @@ public class Manager {
     /**
      * Handles the logic for a new input file.
      */
-    private static void handleNewTask(String bucket, String key, int n) {
+    private static void handleNewTask(String bucket, String key, int n, String responseQueueUrl) {
         System.out.println("Handling new task: " + key);
     
 
         try {
             // 1. Download the input file from S3
-            InputStream s3ObjectStream = s3.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build());
+            InputStream s3ObjectStream = aws.getFileStream(bucket, key);
             BufferedReader reader = new BufferedReader(new InputStreamReader(s3ObjectStream));
             int urlCount = 0;
             String line;
@@ -188,10 +183,8 @@ public class Manager {
                 // Format: "jobKey,analysisType,url"
                 String messageBody = String.format("%s,%s,%s", key, analysisType, url);
                 
-                sqs.sendMessage(SendMessageRequest.builder()
-                        .queueUrl(MANAGER_TO_WORKERS_QUEUE_URL)
-                        .messageBody(messageBody)
-                        .build());
+                aws.sendMessageToSQS(MANAGER_TO_WORKERS_QUEUE_URL, messageBody);
+
                 urlCount++;
             }
             reader.close();
@@ -199,7 +192,7 @@ public class Manager {
             // 3. IMPORTANT: Update the outstanding tasks counter
             outstandingTasks.addAndGet(urlCount);
 
-            jobResults.put(key, new JobTracker(urlCount));
+            jobResults.put(key, new JobTracker(urlCount, responseQueueUrl));
 
             System.out.println("Created " + urlCount + " tasks for job " + key);
 
@@ -226,7 +219,7 @@ public class Manager {
                     .build();
 
             int activeWorkers = 0;
-            DescribeInstancesResponse response = ec2.describeInstances(request);
+            DescribeInstancesResponse response = aws.describeInstancesRequest(request);
             for (Reservation reservation : response.reservations()) {
                 activeWorkers += reservation.instances().size();
             }
@@ -242,38 +235,12 @@ public class Manager {
                 // 3. Write a User-Data script for the Worker
                 // TODO: Fill in YOUR_S3_BUCKET_NAME
                 String workerUserDataScript = "#!/bin/bash\n" +
-                    "aws s3 cp s3://YOUR_S3_BUCKET_NAME/Worker.jar /home/ec2-user/Worker.jar\n" +
+                    "aws s3 cp s3://" + aws.bucketName + "/Worker.jar /home/ec2-user/Worker.jar\n" +
                     "java -jar /home/ec2-user/Worker.jar\n";
-                String workerUserDataBase64 = java.util.Base64.getEncoder().encodeToString(workerUserDataScript.getBytes());
 
                 // 4. Create a RunInstancesRequest
                 // TODO: Fill in YOUR_AMI_ID, YOUR_KEY_NAME, YOUR_SECURITY_GROUP_ID, and YOUR_IAM_ROLE_NAME
-                var runRequest = RunInstancesRequest.builder()
-                    .imageId("YOUR_AMI_ID") // e.g., ami-076515f20540e6e0b
-                    .instanceType(software.amazon.awssdk.services.ec2.model.InstanceType.T2_MICRO)
-                    .maxCount(newWorkersToStart)
-                    .minCount(newWorkersToStart)
-                    .userData(workerUserDataBase64)
-                    .keyName("YOUR_KEY_NAME") // Your .pem key
-                    .securityGroupIds("YOUR_SECURITY_GROUP_ID")
-                    .iamInstanceProfile(software.amazon.awssdk.services.ec2.model.IamInstanceProfileSpecification.builder()
-                            .name("YOUR_IAM_ROLE_NAME") // The IAM Role with S3/SQS/EC2 access
-                            .build())
-                    .build();
-
-                RunInstancesResponse runResponse = ec2.runInstances(runRequest);
-
-                // 5. Tag the new instances with Role=WorkerNode
-                List<String> newInstanceIds = runResponse.instances().stream()
-                        .map(Instance::instanceId)
-                        .collect(java.util.stream.Collectors.toList());
-                
-                Tag tag = Tag.builder().key("Role").value("WorkerNode").build();
-                CreateTagsRequest tagRequest = CreateTagsRequest.builder()
-                        .resources(newInstanceIds)
-                        .tags(tag)
-                        .build();
-                ec2.createTags(tagRequest);
+                aws.createEC2(workerUserDataScript, "WorkerNode", newWorkersToStart);
 
             } else {
                 System.out.println("No new workers needed. Active: " + activeWorkers + ", Required: " + requiredWorkers);
@@ -293,12 +260,8 @@ public class Manager {
         // Loop until shutdown AND all tasks are done
         while (!shuttingDown.get() || outstandingTasks.get() > 0) {
             try {
-                List<Message> messages = sqs.receiveMessage(ReceiveMessageRequest.builder()
-                        .queueUrl(WORKERS_TO_MANAGER_QUEUE_URL)
-                        .maxNumberOfMessages(10)
-                        .waitTimeSeconds(5)
-                        .build()).messages();
-
+                List<Message> messages = aws.receiveMessages(WORKERS_TO_MANAGER_QUEUE_URL);
+                
                 for (Message message : messages) {
                     // Message body from worker: "jobKey:resultLine"
                     String body = message.body();
@@ -314,11 +277,7 @@ public class Manager {
                         System.err.println("Bad worker message, skipping: " + body);
                         // Decrement global counter anyway to prevent stall
                         outstandingTasks.decrementAndGet(); 
-
-                        sqs.deleteMessage(DeleteMessageRequest.builder()
-                            .queueUrl(WORKERS_TO_MANAGER_QUEUE_URL)
-                            .receiptHandle(message.receiptHandle())
-                            .build());
+                        aws.deleteMessage(WORKERS_TO_MANAGER_QUEUE_URL, message.receiptHandle());
 
                         continue;
                     }
@@ -335,7 +294,7 @@ public class Manager {
                         // Check if this specific job is now complete
                         if (remaining == 0) {
                             System.out.println("Job " + jobKey + " is complete.");
-                            buildAndUploadHtml(jobKey, job.results);
+                            buildAndUploadHtml(jobKey, job.results, job.responseQueueUrl);
                             jobResults.remove(jobKey); // Clean up
                         }
                     } else {
@@ -346,10 +305,7 @@ public class Manager {
                     outstandingTasks.decrementAndGet();
                     
                     // Delete the message
-                    sqs.deleteMessage(DeleteMessageRequest.builder()
-                        .queueUrl(WORKERS_TO_MANAGER_QUEUE_URL)
-                        .receiptHandle(message.receiptHandle())
-                        .build());
+                    aws.deleteMessage(WORKERS_TO_MANAGER_QUEUE_URL, message.receiptHandle());
                 }
             } catch (SqsException e) {
                 System.err.println("SQS Error in results collector: " + e.getMessage());
@@ -359,70 +315,71 @@ public class Manager {
     }
 
     // Helper method to build and upload the final HTML
-    private static void buildAndUploadHtml(String jobKey, List<String> results) {
-        System.out.println("Building HTML for " + jobKey);
+    
+    private static void buildAndUploadHtml(String jobKey, List<String> results, String responseQueueUrl) {
+        System.out.println("Building HTML for " + jobKey + ", replying to " + responseQueueUrl);
         
-        // 1. Build an HTML string from the 'results' list
-        StringBuilder html = new StringBuilder();
-        html.append("<html><head><title>Analysis Results</title></head><body>\n");
-        html.append("<h1>Analysis Results for Job: ").append(jobKey).append("</h1>\n");
-        html.append("<ul>\n");
-        
-        for (String line : results) {
-            // Expected format received from Worker: "analysisType,inputUrl,s3OutputUrl"
-            // We parse this to create clickable links
-            try {
-                String[] parts = line.split(","); 
-                String op = parts[0];
-                String inputUrl = parts[1];
-                String outputUrl = parts[2];
-                
-                html.append("<li>")
-                    .append("<strong>").append(op).append("</strong>: ")
-                    .append("<a href=\"").append(inputUrl).append("\">Input File</a> ")
-                    .append("&nbsp;&rarr;&nbsp; ")
-                    .append("<a href=\"").append(outputUrl).append("\">Output File</a>")
-                    .append("</li>\n");
-            } catch (Exception e) {
-                // If the line is an error message or malformed
-                html.append("<li>").append(line).append("</li>\n");
-            }
-        }
-        html.append("</ul></body></html>");
-        
-        // 2. Upload this HTML string to S3
-        String outputKey = "summary_" + jobKey + ".html";
-        
-        try {
-            s3.putObject(software.amazon.awssdk.services.s3.model.PutObjectRequest.builder()
-                    .bucket("YOUR_S3_BUCKET_NAME") // TODO: Ensure this matches your real bucket
-                    .key(outputKey)
-                    .build(),
-                    software.amazon.awssdk.core.sync.RequestBody.fromString(html.toString()));
-            
-            System.out.println("Uploaded summary file to S3: " + outputKey);
+        // 1. Create a temporary file on the hard drive
+        String fileName = "summary_" + jobKey + ".html";
+        File file = new File(fileName);
 
-            // 3. Send a "done" message to the Local Application
-            // We send the full S3 path so the Local App can download it
-            String bucketName = "YOUR_S3_BUCKET_NAME"; // TODO: Ensure this matches
-            String doneMessage = "done:s3://" + bucketName + "/" + outputKey;
+        // Use try-with-resources to automatically close the writer
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
+            // Write header
+            writer.write("<html><head><title>Analysis Results</title></head><body>\n");
+            writer.write("<h1>Analysis Results for Job: " + jobKey + "</h1>\n");
+            writer.write("<ul>\n");
             
-            sqs.sendMessage(SendMessageRequest.builder()
-                    .queueUrl(MANAGER_TO_LOCAL_APP_QUEUE_URL) // Sending response back to the App queue
-                    .messageBody(doneMessage)
-                    .build());
+            // Write results line-by-line. 
+            // This keeps RAM usage low because we don't store the whole string in memory.
+            for (String line : results) {
+                try {
+                    String[] parts = line.split(","); 
+                    String op = parts[0];
+                    String inputUrl = parts[1];
+                    String outputUrl = parts[2];
+                    
+                    String htmlLine = String.format("<li><strong>%s</strong>: <a href=\"%s\">Input File</a> &nbsp;&rarr;&nbsp; <a href=\"%s\">Output File</a></li>\n", 
+                            op, inputUrl, outputUrl);
+                    
+                    writer.write(htmlLine);
+                } catch (Exception e) {
+                    // Handle malformed lines gracefully
+                    writer.write("<li>" + line + "</li>\n");
+                }
+            }
+            writer.write("</ul></body></html>");
+        } catch (IOException e) {
+            System.err.println("Error writing to file: " + e.getMessage());
+            return; // Stop if we can't write the file
+        }
+        
+        // 2. Upload the physical file to S3
+        try {
+            aws.uploadFileToS3(fileName, file);
+            
+            System.out.println("Uploaded summary file to S3: " + fileName);
+
+            // 3. Send "Done" message to Local App
+            String doneMessage = "done:s3://" + aws.bucketName + "/" + fileName;
+            aws.sendMessageToSQS(responseQueueUrl, doneMessage);
             
         } catch (Exception e) {
-            System.err.println("Error uploading HTML or notifying user: " + e.getMessage());
+            System.err.println("Error uploading HTML: " + e.getMessage());
             e.printStackTrace();
+        } finally {
+            // 4. CLEANUP: Delete the temporary file to save disk space!
+            if (file.exists()) {
+                file.delete();
+                System.out.println("Deleted temporary file: " + fileName);
+            }
         }
     }
-
 
         /**
      * Finds all active EC2 instances tagged as "WorkerNode" and terminates them.
      */
-    private static void terminateAllWorkers(Ec2Client ec2) {
+    private static void terminateAllWorkers() {
         System.out.println("Terminating all worker instances...");
         
         // Find instances with "Role=WorkerNode" and are not "terminated"
@@ -434,8 +391,8 @@ public class Manager {
                 .build();
         
         List<String> workerInstanceIds = new ArrayList<>();
-        DescribeInstancesResponse response = ec2.describeInstances(request);
-        
+        DescribeInstancesResponse response = aws.describeInstancesRequest(request);
+
         for (Reservation reservation : response.reservations()) {
             for (Instance instance : reservation.instances()) {
                 workerInstanceIds.add(instance.instanceId());
@@ -446,7 +403,7 @@ public class Manager {
             TerminateInstancesRequest terminateRequest = TerminateInstancesRequest.builder()
                     .instanceIds(workerInstanceIds)
                     .build();
-            ec2.terminateInstances(terminateRequest);
+            aws.terminateInstance(terminateRequest);
             System.out.println("Sent termination request for " + workerInstanceIds.size() + " workers.");
         } else {
             System.out.println("No active workers found to terminate.");
@@ -457,7 +414,7 @@ public class Manager {
  * Gets its own instance ID from the AWS Instance Metadata Service
  * and issues a termination request for itself.
  */
-    private static void terminateSelf(Ec2Client ec2) {
+    private static void terminateSelf() {
         System.out.println("Terminating Manager (self)...");
         try {
             // Use the Instance Metadata Service to find our own ID
@@ -474,7 +431,7 @@ public class Manager {
                 TerminateInstancesRequest terminateRequest = TerminateInstancesRequest.builder()
                         .instanceIds(instanceId)
                         .build();
-                ec2.terminateInstances(terminateRequest);
+                aws.terminateInstance(terminateRequest);
             } else {
                 System.err.println("Could not get self instance-id to terminate.");
             }
@@ -489,21 +446,15 @@ public class Manager {
     static class JobTracker {
         final List<String> results;
         final AtomicInteger tasksRemaining;
+        final String responseQueueUrl;
         
-        public JobTracker(int totalTasks) {
-            // Thread-safe list to hold the output lines
+        public JobTracker(int totalTasks, String responseQueueUrl) {
             this.results = Collections.synchronizedList(new ArrayList<>());
-            // Thread-safe counter initialized to the total number of URLs
             this.tasksRemaining = new AtomicInteger(totalTasks);
+            this.responseQueueUrl = responseQueueUrl;
         }
-    
-        public void addResult(String resultLine) {
-            results.add(resultLine);
-        }
-    
-        // Decrements the counter by 1 and returns the new value
-        public int decrementAndGet() {
-            return tasksRemaining.decrementAndGet();
-        }
+        
+        public void addResult(String resultLine) { results.add(resultLine); }
+        public int decrementAndGet() { return tasksRemaining.decrementAndGet(); }
     }
 }
