@@ -18,26 +18,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import software.amazon.awssdk.core.sync.RequestBody;
-import software.amazon.awssdk.services.ec2.Ec2Client;
-import software.amazon.awssdk.services.ec2.model.CreateTagsRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeInstancesResponse;
 import software.amazon.awssdk.services.ec2.model.Filter;
 import software.amazon.awssdk.services.ec2.model.Instance;
 import software.amazon.awssdk.services.ec2.model.Reservation;
-import software.amazon.awssdk.services.ec2.model.RunInstancesRequest;
-import software.amazon.awssdk.services.ec2.model.RunInstancesResponse;
-import software.amazon.awssdk.services.ec2.model.Tag;
 import software.amazon.awssdk.services.ec2.model.TerminateInstancesRequest;
-import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.GetObjectRequest;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
-import software.amazon.awssdk.services.sqs.SqsClient;
-import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.Message;
-import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
-import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SqsException;
 
 public class Manager {
@@ -61,7 +48,6 @@ public class Manager {
     // This map will store the results for each job to build the HTML
     // Key = Job ID (e.g., the input file key), Value = List of result lines
     private static final ConcurrentMap<String, JobTracker> jobResults = new ConcurrentHashMap<>();
-
 
 
     public static void main(String[] args) {
@@ -236,8 +222,8 @@ public class Manager {
                 // TODO: Fill in YOUR_S3_BUCKET_NAME
                 String workerUserDataScript = "#!/bin/bash\n" +
                     "aws s3 cp s3://" + aws.bucketName + "/Worker.jar /home/ec2-user/Worker.jar\n" +
-                    "java -jar /home/ec2-user/Worker.jar\n";
-
+                    "java -cp /home/ec2-user/Worker.jar com.example.Worker\n";
+ 
                 // 4. Create a RunInstancesRequest
                 // TODO: Fill in YOUR_AMI_ID, YOUR_KEY_NAME, YOUR_SECURITY_GROUP_ID, and YOUR_IAM_ROLE_NAME
                 aws.createEC2(workerUserDataScript, "WorkerNode", newWorkersToStart);

@@ -1,1 +1,5 @@
+com\example\Worker.class
+com\example\Manager$JobTracker.class
 com\example\AWS.class
+com\example\LocalApp.class
+com\example\Manager.class

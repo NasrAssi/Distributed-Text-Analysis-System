@@ -1,0 +1,18 @@
+-------------------------------------------------------------------------------
+Test set: com.example.LocalAppTest
+-------------------------------------------------------------------------------
+Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 2400 s <<< FAILURE! -- in com.example.LocalAppTest
+com.example.LocalAppTest.testSystemWithRealInput -- Time elapsed: 2400 s <<< ERROR!
+java.util.concurrent.TimeoutException: testSystemWithRealInput() timed out after 40 minutes
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	Suppressed: org.opentest4j.AssertionFailedError: The output HTML file was not created! ==> expected: <true> but was: <false>
+		at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+		at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+		at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:63)
+		at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:36)
+		at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:214)
+		at com.example.LocalAppTest.testSystemWithRealInput(LocalAppTest.java:52)
+		at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+		... 2 more
+

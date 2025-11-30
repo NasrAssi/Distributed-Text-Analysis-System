@@ -1,14 +1,36 @@
 package com.example;
 
+import java.io.File;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.waiters.WaiterResponse;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ec2.model.CreateTagsRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeInstancesResponse;
+import software.amazon.awssdk.services.ec2.model.Ec2Exception;
+import software.amazon.awssdk.services.ec2.model.Filter;
+import software.amazon.awssdk.services.ec2.model.IamInstanceProfileSpecification;
+import software.amazon.awssdk.services.ec2.model.Instance;
+import software.amazon.awssdk.services.ec2.model.InstanceType;
+import software.amazon.awssdk.services.ec2.model.Reservation;
+import software.amazon.awssdk.services.ec2.model.RunInstancesRequest;
+import software.amazon.awssdk.services.ec2.model.RunInstancesResponse;
+import software.amazon.awssdk.services.ec2.model.StartInstancesRequest;
 import software.amazon.awssdk.services.ec2.model.Tag;
+import software.amazon.awssdk.services.ec2.model.TerminateInstancesRequest;
 import software.amazon.awssdk.services.ec2.waiters.Ec2Waiter;
-import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.*;
+import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
@@ -18,18 +40,12 @@ import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
-import java.io.File;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.List;
-
 public class AWS {
     private final S3Client s3;
     private final SqsClient sqs;
     private final Ec2Client ec2;
 
-    public static String ami = "ami-0829e00d96164fbc9";
+    public static String ami = "ami-0fa3fe0fa7920f68e";
 
     public static Region region = Region.US_EAST_1;
 
@@ -45,7 +61,7 @@ public class AWS {
         return instance;
     }
 
-    public final String bucketName = "naser-wesam-dsp-bucket";
+    public final String bucketName = "naser-wesam-dsp-bucket-v2";
 
     // S3
     public void createBucketIfNotExists(String bucketName) {
@@ -53,11 +69,8 @@ public class AWS {
             s3.createBucket(CreateBucketRequest
                     .builder()
                     .bucket(bucketName)
-                    .createBucketConfiguration(
-                            CreateBucketConfiguration.builder()
-                                    .locationConstraint(BucketLocationConstraint.US_WEST_2)
-                                    .build())
                     .build());
+
             s3.waiter().waitUntilBucketExists(HeadBucketRequest.builder()
                     .bucket(bucketName)
                     .build());
@@ -74,7 +87,7 @@ public class AWS {
                 .maxCount(numberOfInstances)
                 .minCount(numberOfInstances) // Ensure we get exactly the number we asked for
                 .keyName("vockey")
-                .securityGroupIds("YOUR_SECURITY_GROUP_ID") // Add your SG ID here
+                .securityGroupIds("sg-026d8ac7682b22bc1")
                 .iamInstanceProfile(IamInstanceProfileSpecification.builder().name("LabInstanceProfile").build())
                 .userData(Base64.getEncoder().encodeToString((script).getBytes())) 
                 .build();
@@ -229,17 +242,12 @@ public class AWS {
 
     }
 
-    public void deleteQueue(String queueName) {
+    public void deleteQueue(String queueUrl) {
         try {
-            GetQueueUrlResponse getQueueUrlResponse = sqs.getQueueUrl(
-                GetQueueUrlRequest.builder().queueName(queueName).build()
-            );
-            String queueUrl = getQueueUrlResponse.queueUrl();
-        
             sqs.deleteQueue(software.amazon.awssdk.services.sqs.model.DeleteQueueRequest.builder()
                     .queueUrl(queueUrl)
                     .build());
-            System.out.println("Deleted queue: " + queueName);
+            System.out.println("Deleted queue: " + queueUrl);
         } catch (Exception e) {
             System.err.println("Failed to delete queue: " + e.getMessage());
         }
