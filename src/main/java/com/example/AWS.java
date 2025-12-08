@@ -29,6 +29,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.sqs.SqsClient;
@@ -85,7 +86,7 @@ public class AWS {
                 .instanceType(InstanceType.T2_MICRO)
                 .imageId(ami)
                 .maxCount(numberOfInstances)
-                .minCount(numberOfInstances) // Ensure we get exactly the number we asked for
+                .minCount(numberOfInstances)
                 .keyName("vockey")
                 .securityGroupIds("sg-026d8ac7682b22bc1")
                 .iamInstanceProfile(IamInstanceProfileSpecification.builder().name("LabInstanceProfile").build())
@@ -118,7 +119,7 @@ public class AWS {
             System.err.println("[ERROR] " + e.getMessage());
         }
         
-        return instanceIds; // Return the LIST of IDs
+        return instanceIds; 
     }
 
     public void createSqsQueue(String queueName) {
@@ -200,6 +201,7 @@ public class AWS {
         PutObjectRequest request = PutObjectRequest.builder()
                 .bucket(this.bucketName) // Uses the bucketName already in your AWS class
                 .key(keyName)
+                .acl(ObjectCannedACL.PUBLIC_READ) // Optional: make the file public
                 .build();
 
         // The s3 client is already defined as this.s3
@@ -229,6 +231,17 @@ public class AWS {
             .waitTimeSeconds(20).build();    // Use 20-second long polling
 
         // The sqs client is already defined as this.sqs
+        return this.sqs.receiveMessage(receiveRequest).messages();
+    }
+
+    public List<Message> receiveWorkerMessages(String queueUrl) {
+        ReceiveMessageRequest receiveRequest = ReceiveMessageRequest.builder()
+            .queueUrl(queueUrl)
+            .maxNumberOfMessages(1)
+            .waitTimeSeconds(20)  
+            .visibilityTimeout(1800)
+            .build();
+
         return this.sqs.receiveMessage(receiveRequest).messages();
     }
 
@@ -263,7 +276,6 @@ public class AWS {
     public void terminateInstance(TerminateInstancesRequest terminateRequest) {
         ec2.terminateInstances(terminateRequest);
     }
-
 
     public void downloadFileFromS3(String keyName, String outputFilePath) {
         System.out.println("Downloading " + keyName + " from S3...");

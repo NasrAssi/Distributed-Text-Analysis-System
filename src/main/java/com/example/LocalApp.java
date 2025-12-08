@@ -89,14 +89,13 @@ public class LocalApp {
             String inputKey = "input_" + localAppId + ".txt";
             aws.uploadFileToS3(inputKey, new File(inputFileName));
  
- 
             // --- 5. Send Task Message to Manager ---
-            String messageBody = aws.bucketName + "," + inputKey + "," + n + "," + responseQueueName;
+            String messageBody = aws.bucketName + "\t" + inputKey + "\t" + n + "\t" + responseQueueUrl;
            
             aws.sendMessageToSQS(managerQueueUrl, messageBody);
            
             System.out.println("Task sent to Manager: " + messageBody);
-            System.out.println("Waiting for results on " + responseQueueName + "...");
+            System.out.println("Waiting for results on " + responseQueueUrl + "...");
  
  
             // --- 6. Wait for Response ---

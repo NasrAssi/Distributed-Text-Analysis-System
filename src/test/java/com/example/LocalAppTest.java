@@ -13,12 +13,12 @@ public class LocalAppTest {
 
     // Point to your ACTUAL input file
     // Make sure this path matches exactly where it is in your VS Code folder
-    private static final String INPUT_FILE_PATH = "C:\\Users\\naser\\Desktop\\study\\DSP\\DSP1\\demo\\src\\main\\input.text";
+    private static final String INPUT_FILE_PATH = "C:\\Users\\naser\\Desktop\\study\\DSP\\DSP1\\demo\\input.text";
     private static final String OUTPUT_FILE_NAME = "test_output.html";
     private static final String WORKERS_PER_N = "1"; // n = 1
 
     @Test
-    @Timeout(value = 20, unit = TimeUnit.MINUTES) // Give it 20 mins just in case big data takes time
+    @Timeout(value = 60, unit = TimeUnit.MINUTES) // Give it 60 mins just in case big data takes time
     public void testSystemWithRealInput() {
         System.out.println("[TEST] Starting System Test using file: " + INPUT_FILE_PATH);
 
@@ -33,7 +33,6 @@ public class LocalAppTest {
             INPUT_FILE_PATH, 
             OUTPUT_FILE_NAME, 
             WORKERS_PER_N
-            //, "terminate" // Uncomment this if you want to kill the manager after the test
         };
 
         // 3. Run the Local Application

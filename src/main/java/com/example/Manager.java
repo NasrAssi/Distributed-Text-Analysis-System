@@ -33,9 +33,9 @@ public class Manager {
     final static AWS aws = AWS.getInstance();
     
     // Queues
-    private static final String LOCAL_APP_TO_MANAGER_QUEUE_URL = aws.getQueueUrl("LocalToManager");
-    private static final String MANAGER_TO_WORKERS_QUEUE_URL = aws.getQueueUrl("ManagerToWorker");
-    private static final String WORKERS_TO_MANAGER_QUEUE_URL = aws.getQueueUrl("WorkerToManager");
+    private static String LOCAL_APP_TO_MANAGER_QUEUE_URL = aws.getQueueUrl("LocalToManager");
+    private static String MANAGER_TO_WORKERS_QUEUE_URL = null;
+    private static String WORKERS_TO_MANAGER_QUEUE_URL = null;
     
     // Concurrency
     private static final ExecutorService executor = Executors.newFixedThreadPool(10); // Handles 10 apps at once
@@ -52,7 +52,14 @@ public class Manager {
 
     public static void main(String[] args) {
         System.out.println("Manager node is running...");
-        
+
+        aws.createSqsQueue("ManagerToWorker");
+        aws.createSqsQueue("WorkerToManager");
+
+        System.out.println("created ManagerToWorker queue and WorkerToManager queue");
+
+        MANAGER_TO_WORKERS_QUEUE_URL = aws.getQueueUrl("ManagerToWorker");
+        WORKERS_TO_MANAGER_QUEUE_URL = aws.getQueueUrl("WorkerToManager");
         // Start the results collector thread
         Thread resultsThread = new Thread(Manager::resultsCollectorLoop);
         resultsThread.start();
@@ -125,7 +132,7 @@ public class Manager {
             } else {
                 // It's a "new task" message [cite: 51]
                 // Message body is "bucket,key,n"
-                String[] parts = messageBody.split(",");
+                String[] parts = messageBody.split("\t");
                 String bucket = parts[0];
                 String key = parts[1];
                 int n = Integer.parseInt(parts[2]); // Max files per worker [cite: 11]
@@ -161,13 +168,13 @@ public class Manager {
                 String[] parts = line.split("\t"); // [cite: 14]
                 if (parts.length < 2) continue;
                 
-                String analysisType = parts[0];
-                String url = parts[1];
+                String analysisType = parts[0].trim();
+                String url = parts[1].trim();
 
                 // The message body for the worker
                 // We also include the "jobKey" so the worker can send it back
                 // Format: "jobKey,analysisType,url"
-                String messageBody = String.format("%s,%s,%s", key, analysisType, url);
+                String messageBody = String.format("%s\t%s\t%s", key, analysisType, url);
                 
                 aws.sendMessageToSQS(MANAGER_TO_WORKERS_QUEUE_URL, messageBody);
 
@@ -221,11 +228,12 @@ public class Manager {
                 // 3. Write a User-Data script for the Worker
                 // TODO: Fill in YOUR_S3_BUCKET_NAME
                 String workerUserDataScript = "#!/bin/bash\n" +
+                    "yum update -y\n" +
+                    "yum install java-17-amazon-corretto -y\n" +
                     "aws s3 cp s3://" + aws.bucketName + "/Worker.jar /home/ec2-user/Worker.jar\n" +
-                    "java -cp /home/ec2-user/Worker.jar com.example.Worker\n";
- 
+                    "java -Xmx800m -cp /home/ec2-user/Worker.jar com.example.Worker > /home/ec2-user/worker.log 2>&1\n";
+
                 // 4. Create a RunInstancesRequest
-                // TODO: Fill in YOUR_AMI_ID, YOUR_KEY_NAME, YOUR_SECURITY_GROUP_ID, and YOUR_IAM_ROLE_NAME
                 aws.createEC2(workerUserDataScript, "WorkerNode", newWorkersToStart);
 
             } else {
@@ -256,9 +264,9 @@ public class Manager {
                     String resultLine;
                     try {
                         // Split "jobKey:rest_of_the_line"
-                        int firstComma = body.indexOf(',');
-                        jobKey = body.substring(0, firstComma);
-                        resultLine = body.substring(firstComma + 1);
+                        int firstDiv = body.indexOf('\t');
+                        jobKey = body.substring(0, firstDiv);
+                        resultLine = body.substring(firstDiv + 1);
                     } catch (Exception e) {
                         System.err.println("Bad worker message, skipping: " + body);
                         // Decrement global counter anyway to prevent stall
@@ -320,7 +328,7 @@ public class Manager {
             // This keeps RAM usage low because we don't store the whole string in memory.
             for (String line : results) {
                 try {
-                    String[] parts = line.split(","); 
+                    String[] parts = line.split("\t"); 
                     String op = parts[0];
                     String inputUrl = parts[1];
                     String outputUrl = parts[2];

@@ -40,7 +40,7 @@ public class Worker {
         while (true) {
             try {
                 // 1. Receive a message from the queue
-                List<Message> messages = aws.receiveMessages(MANAGER_TO_WORKERS_QUEUE_URL);
+                List<Message> messages = aws.receiveWorkerMessages(MANAGER_TO_WORKERS_QUEUE_URL);
                 for (Message message : messages) {
                     processMessage(message);
                 }
@@ -65,10 +65,10 @@ public class Worker {
 
         try {
             // 2. Parse Message (Format: "jobKey,analysisType,url")
-            String[] parts = messageBody.split(",");
-            jobKey = parts[0];
-            analysisType = parts[1];
-            url = parts[2];
+            String[] parts = messageBody.split("\t");
+            jobKey = parts[0].trim();
+            analysisType = parts[1].trim();
+            url = parts[2].trim();
 
             // 3. Initialize Stanford Pipeline (Once per file)
             StanfordCoreNLP pipeline = createPipeline(analysisType);
@@ -101,8 +101,8 @@ public class Worker {
             aws.uploadFileToS3(outputFileName, tempOutputFile);
 
             // 7. Send "Done" to Manager using AWS Helper
-            String s3Url = "s3://" + aws.bucketName + "/" + outputFileName;
-            String doneMessage = String.format("%s,%s,%s,%s", jobKey, analysisType, url, s3Url);
+            String s3Url = "https://" + aws.bucketName + ".s3.amazonaws.com/" + outputFileName;
+            String doneMessage = String.format("%s\t%s\t%s\t%s", jobKey, analysisType, url, s3Url);
 
             aws.sendMessageToSQS(WORKERS_TO_MANAGER_QUEUE_URL, doneMessage);
 
@@ -176,7 +176,7 @@ public class Worker {
 
     private static void sendFailureMessage(String jobKey, String op, String inputUrl, String errorMsg) {
         try {
-            String msg = String.format("%s,%s,%s,%s", jobKey, op, inputUrl, errorMsg);
+            String msg = String.format("%s\t%s\t%s\t%s", jobKey, op, inputUrl, errorMsg);
             aws.sendMessageToSQS(WORKERS_TO_MANAGER_QUEUE_URL, msg);
         } catch (Exception e) {
             System.err.println("Failed to send error report.");
