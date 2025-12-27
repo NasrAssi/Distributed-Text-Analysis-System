@@ -46,15 +46,15 @@ From the project root directory:
    
    mvn clean package
 
-   This creates the artifact in the `target/` folder (e.g., `dsp1-1.0-SNAPSHOT.jar`).
+   This creates the artifact in the `target/` folder (e.g., `demo-1.0-SNAPSHOT.jar`).
 
 2. Rename and Upload JARs to S3:
    The EC2 instances expect specific filenames in the root of the bucket.
 
-   a. Copy `target/dsp1-1.0-SNAPSHOT.jar` to `Manager.jar` and upload to S3 root.
-   b. Copy `target/dsp1-1.0-SNAPSHOT.jar` to `Worker.jar` and upload to S3 root.
+   a. Copy `target/demo-1.0-SNAPSHOT.jar` to `Manager.jar` and upload to S3 root.
+   b. Copy `target/demo-1.0-SNAPSHOT.jar` to `Worker.jar` and upload to S3 root.
    
-   *Note: Ensure these are uploaded to 's3://wesam-nasr-dsp1/' directly, not in a subfolder.*
+   *Note: Ensure these are uploaded to 's3://naser-wesam-dsp-bucket-v2/' directly, not in a subfolder.*
 
 
 3. INPUT FORMAT
@@ -93,7 +93,7 @@ Arguments:
 5.1 Local Application
 ---------------------
 1. Generates a unique ID (UUID) and creates a temporary, dynamic SQS queue (`ResponseQueue_UUID`) for this specific run.
-2. Checks for an active Manager instance. If missing, launches a `t3.micro` instance with a User Data script that downloads `Manager.jar` from S3.
+2. Checks for an active Manager instance. If missing, launches a `t2.micro` instance with a User Data script that downloads `Manager.jar` from S3.
 3. Uploads the input file to S3.
 4. Sends a message to `LocalToManager` queue containing: Bucket, Key, N, and the Dynamic Response Queue URL.
 5. Polls its private Response Queue. Upon receiving "done", it downloads the HTML summary and deletes the temporary queue.
@@ -102,7 +102,7 @@ Arguments:
 -----------
 1. Multithreaded: Uses an `ExecutorService` to handle multiple LocalApp requests in parallel.
 2. Downloads input file from S3 using efficient Streams.
-3. Scaling: Checks active workers and launches new `t3.micro` instances if needed (Logic: `required - active`, capped at 18 total).
+3. Scaling: Checks active workers and launches new `t2.micro` instances if needed (Logic: `required - active`, capped at 18 total).
 4. Sends individual tasks to `ManagerToWorker` queue.
 5. Results Collector: A separate thread polls `WorkerToManager`.
    - It aggregates results into a `JobTracker` object.
@@ -115,7 +115,7 @@ Arguments:
 2. Long-polls `ManagerToWorker` queue.
 3. Streaming Processing: 
    - Downloads the text file line-by-line using `BufferedReader` and `URL.openStream()`.
-   - **Crucial:** It never loads the entire book into RAM, preventing OutOfMemory errors on `t3.micro` instances.
+   - **Crucial:** It never loads the entire book into RAM, preventing OutOfMemory errors on `t2.micro` instances.
 4. Processes each line with Stanford CoreNLP.
 5. Writes results to a local temp file, uploads to S3, and notifies Manager.
 
@@ -150,6 +150,8 @@ Arguments:
    - Uses `DefaultCredentialsProvider` for LocalApp.
    - No hardcoded secret keys.
 
-   8. THEORETICAL CONSIDERATIONS & SCALABILITY
 
-   Fault Tolerance: To handle node failures (e.g., if a Worker crashes mid-process), we rely on SQS Visibility Timeouts. If a worker pulls a message but does not delete it (due to a crash), the message will become visible again after the timeout period. Another worker will then pick it up, ensuring no task is lost.
+8. THEORETICAL CONSIDERATIONS & SCALABILITY
+-------------------------------------------
+
+Fault Tolerance: To handle node failures (e.g., if a Worker crashes mid-process), we rely on SQS Visibility Timeouts. If a worker pulls a message but does not delete it (due to a crash), the message will become visible again after the timeout period. Another worker will then pick it up, ensuring no task is lost.
