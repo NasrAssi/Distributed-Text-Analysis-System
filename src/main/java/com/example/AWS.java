@@ -62,7 +62,7 @@ public class AWS {
         return instance;
     }
 
-    public final String bucketName = "naser-wesam-dsp-bucket-v2";
+    public final String bucketName = "naser-wesam-dsp-bucket-v3";
 
     // S3
     public void createBucketIfNotExists(String bucketName) {
@@ -239,7 +239,7 @@ public class AWS {
             .queueUrl(queueUrl)
             .maxNumberOfMessages(1)
             .waitTimeSeconds(20)  
-            .visibilityTimeout(1800)
+            .visibilityTimeout(300)
             .build();
 
         return this.sqs.receiveMessage(receiveRequest).messages();

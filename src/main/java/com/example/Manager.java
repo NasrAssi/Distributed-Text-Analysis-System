@@ -7,6 +7,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -67,12 +68,21 @@ public class Manager {
         // Main loop: Polls for messages from Local Applications
         while (!shuttingDown.get()) {
             try {
-
                 List<Message> messages = aws.receiveMessages(LOCAL_APP_TO_MANAGER_QUEUE_URL);
 
                 for (Message message : messages) {
-                    // Give the task to a thread to run in parallel
-                    executor.submit(() -> processMessage(message));
+                    String messageBody = message.body();
+                    
+                    // Handle TERMINATE in the MAIN thread, not the executor
+                    if ("TERMINATE".equals(messageBody)) {
+                        System.out.println("Termination message received.");
+                        shuttingDown.set(true);
+                        aws.deleteMessage(LOCAL_APP_TO_MANAGER_QUEUE_URL, message.receiptHandle());
+                        break; // Exit the for loop immediately
+                    } else {
+                        // Only submit regular tasks to the executor
+                        executor.submit(() -> processMessage(message));
+                    }
                 }
             } catch (SqsException e) {
                 System.err.println("SQS Error in main loop: " + e.getMessage());
@@ -112,6 +122,8 @@ public class Manager {
         // 4. Terminate worker instances 
         terminateAllWorkers();
 
+        deleteQueues();
+
         // 5. Terminate self 
         terminateSelf();
         
@@ -124,22 +136,15 @@ public class Manager {
         try {
             String messageBody = message.body();
             
-            // Check if it's a "terminate" message
-            if ("TERMINATE".equals(messageBody)) {
-                System.out.println("Termination message received.");
-                shuttingDown.set(true); // [cite: 62]
+            // It's a "new task" message
+            // Message body is "bucket\tkey\tn\tresponseQueueUrl"
+            String[] parts = messageBody.split("\t");
+            String bucket = parts[0];
+            String key = parts[1];
+            int n = Integer.parseInt(parts[2]);
+            String responseQueueUrl = parts[3];
             
-            } else {
-                // It's a "new task" message [cite: 51]
-                // Message body is "bucket,key,n"
-                String[] parts = messageBody.split("\t");
-                String bucket = parts[0];
-                String key = parts[1];
-                int n = Integer.parseInt(parts[2]); // Max files per worker [cite: 11]
-                String responseQueueUrl = parts[3]; // <--- Capture the reply address
-                
-                handleNewTask(bucket, key, n, responseQueueUrl);
-            }
+            handleNewTask(bucket, key, n, responseQueueUrl);
 
             aws.deleteMessage(LOCAL_APP_TO_MANAGER_QUEUE_URL, message.receiptHandle());
 
@@ -410,27 +415,36 @@ public class Manager {
  */
     private static void terminateSelf() {
         System.out.println("Terminating Manager (self)...");
+        
+        String instanceId = null;
         try {
-            // Use the Instance Metadata Service to find our own ID
-            // This is a special, non-routable IP address accessible only from the instance
-            String command = "curl -s http://169.254.169.254/latest/meta-data/instance-id";
-            Process process = Runtime.getRuntime().exec(command);
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            
-            String instanceId = reader.readLine();
-            reader.close();
-            
-            if (instanceId != null && !instanceId.isEmpty()) {
-                System.out.println("My instance ID is: " + instanceId);
-                TerminateInstancesRequest terminateRequest = TerminateInstancesRequest.builder()
-                        .instanceIds(instanceId)
-                        .build();
-                aws.terminateInstance(terminateRequest);
-            } else {
-                System.err.println("Could not get self instance-id to terminate.");
+            URL url = new URL("http://169.254.169.254/latest/meta-data/instance-id");
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(url.openStream()))) {
+                instanceId = reader.readLine().trim();
             }
-        } catch (IOException e) {
-            System.err.println("Error terminating self: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("[Manager] WARNING: Failed to read Instance ID. Not on EC2?");
+        }
+            
+        if (instanceId != null && !instanceId.isEmpty()) {
+            System.out.println("My instance ID is: " + instanceId);
+            TerminateInstancesRequest terminateRequest = TerminateInstancesRequest.builder()
+                    .instanceIds(instanceId)
+                    .build();
+            aws.terminateInstance(terminateRequest);
+        } else {
+            System.err.println("Could not get self instance-id to terminate.");
+        }
+    }
+
+    private static void deleteQueues() {
+        System.out.println("Deleting SQS queues...");
+        try {
+            aws.deleteQueue(LOCAL_APP_TO_MANAGER_QUEUE_URL);
+            aws.deleteQueue(MANAGER_TO_WORKERS_QUEUE_URL);
+            aws.deleteQueue(WORKERS_TO_MANAGER_QUEUE_URL);
+        } catch (Exception e) {
+            System.err.println("Error deleting queues: " + e.getMessage());
         }
     }
 
