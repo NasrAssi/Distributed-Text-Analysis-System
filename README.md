@@ -2,8 +2,8 @@ DISTRIBUTED TEXT ANALYSIS SYSTEM ON AWS
 ======================================
 
 Student:
-  Wesam gara [213305741]
-  Nasr assi [325707180]
+  Wesam gara 21330541
+  Nasr assi  325707180
 
 Course: Distributed Systems Programming – Text Analysis in the Cloud
 
@@ -149,9 +149,97 @@ Arguments:
    - Uses `IamInstanceProfile` ("LabInstanceProfile") for EC2.
    - Uses `DefaultCredentialsProvider` for LocalApp.
    - No hardcoded secret keys.
-
+   
 
 8. THEORETICAL CONSIDERATIONS & SCALABILITY
 -------------------------------------------
 
-Fault Tolerance: To handle node failures (e.g., if a Worker crashes mid-process), we rely on SQS Visibility Timeouts. If a worker pulls a message but does not delete it (due to a crash), the message will become visible again after the timeout period. Another worker will then pick it up, ensuring no task is lost.
+8.1 SCALABILITY ("1 Million Clients")
+
+We addressed scalability in two main areas:
+
+A. Data Scalability (SOLVED):
+   - Problem: Storing results in RAM (HashMap) crashes the Manager with 
+     OutOfMemoryError when processing large files.
+   - Solution: We implemented a "Disk-Based Streaming" approach. The Manager 
+     writes incoming results immediately to a temporary file on the EBS volume.
+   - Result: RAM usage is O(1). The Manager can handle input files of any 
+     size without crashing.
+
+B. Concurrency Scalability (The Limit):
+   - Question: Will it support 1 million simultaneous clients?
+   - Answer: With a single Manager node, NO. While our code logic handles 
+     the data, the Operating System limits the number of open file 
+     descriptors (sockets/files) per process (e.g., 4096).
+   - Solution for 1 Billion Users: To scale to 1 billion, we would need:
+     1. Multiple Managers behind a Load Balancer
+     2. Auto Scaling Groups for Workers (not fixed 18)
+     3. DynamoDB instead of local files for job tracking
+     4. Kubernetes/ECS for container orchestration
+
+C. What Already Scales:
+   - SQS: Unlimited messages (AWS managed)
+   - S3: Unlimited storage (AWS managed)
+   - Workers: Pull-model design allows easy horizontal scaling
+
+
+8.2 PERSISTENCE ("What if a node dies?")
+
+We handle failures at every level:
+
+   - Worker Failure: If a Worker crashes, it doesn't delete the message 
+     from SQS. After 5 minutes (visibility timeout), the message reappears 
+     and another Worker processes it. No task is ever lost.
+   
+   - Manager Failure: We use `writer.flush()` immediately after writing 
+     every result line. If the Manager crashes, data received so far is 
+     physically saved on disk, not lost in RAM.
+   
+   - SQS Durability: Messages are stored redundantly across multiple AWS 
+     data centers. Messages are never lost even if a data center fails.
+   
+   - S3 Durability: 99.999999999% (11 nines) durability. Files uploaded 
+     to S3 are essentially permanent.
+
+
+8.3 THREADS ("When is it a good idea?")
+
+   Good Idea (Manager):
+   - ExecutorService (10 threads): Processes multiple LocalApp jobs in 
+     parallel. Client B doesn't wait for Client A.
+   - Results Collector Thread: Collects worker results without blocking 
+     the main thread from accepting new jobs.
+   
+   Bad Idea (Workers):
+   - We did NOT use threads in Workers. Each Worker is a separate EC2 
+     instance, so parallelism is achieved through multiple Workers, not 
+     multiple threads. Adding threads would increase complexity without 
+     benefit
+
+
+     8.4 WORKER UTILIZATION ("Are some workers slacking?")
+   - Answer: No, all workers are fully utilized due to the "Pull Model" architecture.
+   - Mechanism: We use a shared SQS queue (`ManagerToWorker`). The Manager does not push specific tasks to specific instances. Instead, Workers pull tasks from the queue whenever they are idle.
+   - Benefit: This provides perfect Dynamic Load Balancing. If one Worker gets a computationally heavy file (e.g., a large book requiring Dependency Parsing), it will be busy for a while. Meanwhile, other Workers will continue processing the remaining smaller tasks from the queue. No Worker waits for another; they only stop when the queue is empty.
+
+
+
+   8.5 SEPARATION OF CONCERNS ("Is the manager doing too much?")
+
+   - Answer: No. We strictly enforced the "Separation of Concerns" principle.
+   
+   - The Manager's Role (Orchestrator):
+     The Manager acts solely as a dispatcher and aggregator. It is lightweight.
+     1. Parses the input list of URLs (Metadata).
+     2. Scales the EC2 infrastructure.
+     3. Collects result strings.
+     4. Generates the HTML report.
+     *Critical Distinction:* The Manager NEVER loads the heavy 'Stanford CoreNLP' library and never performs text analysis.
+   
+   - The Worker's Role (Processor):
+     The Workers handle 100% of the CPU-intensive and Memory-intensive tasks.
+     1. Downloads the actual book text.
+     2. Runs the NLP algorithms (POS/Constituency/Dependency).
+     3. Uploads the heavy result files to S3.
+   
+   - Conclusion: By offloading the analysis entirely to Workers, the Manager remains responsive and stable, capable of managing the system without being bogged down by computation.

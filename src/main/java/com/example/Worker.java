@@ -92,7 +92,7 @@ public class Worker {
                     
                     // Write result immediately to disk
                     writer.write(analyzedLine);
-                    writer.newLine(); 
+                    writer.newLine();
                 }
             }
 
